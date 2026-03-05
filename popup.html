@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>YouTube Transcript Copy</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <header class="head">
+        <h1>Transcript</h1>
+        <p id="video-status" class="sub">Loading...</p>
+      </header>
+
+      <section class="row">
+        <button id="mode-btn" class="btn">MODE: --</button>
+        <button id="ts-btn" class="btn">TS: --</button>
+      </section>
+
+      <section class="row">
+        <button id="copy-btn" class="btn primary">Copy</button>
+        <button id="download-btn" class="btn primary">Download</button>
+      </section>
+
+      <p id="status" class="status">Ready</p>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
