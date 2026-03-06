@@ -101,6 +101,35 @@ function waitForElement(selector, timeout = 5000) {
   });
 }
 
+function waitForCondition(predicate, timeout = 5000, interval = 200) {
+  return new Promise((resolve) => {
+    const immediate = predicate();
+    if (immediate) {
+      resolve(immediate);
+      return;
+    }
+
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      const result = predicate();
+      if (result) {
+        clearInterval(timer);
+        resolve(result);
+        return;
+      }
+
+      if (Date.now() - startedAt >= timeout) {
+        clearInterval(timer);
+        resolve(null);
+      }
+    }, interval);
+  });
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function isJapaneseCode(languageCode) {
   return /^ja([_-].+)?$/i.test(languageCode || "");
 }
@@ -411,13 +440,151 @@ function findTranscriptButtonByText() {
   });
 }
 
+function getTranscriptContainerCandidates() {
+  return Array.from(
+    document.querySelectorAll(
+      [
+        ".ytd-transcript-segment-list-renderer#segments-container",
+        "ytd-transcript-segment-list-renderer #segments-container",
+        "ytd-engagement-panel-section-list-renderer #segments-container",
+        "ytd-transcript-renderer #segments-container",
+        "div[id='segments-container']",
+        "ytd-item-section-renderer[section-identifier^='timeline_view_section'] #contents",
+      ].join(",")
+    )
+  );
+}
+
+function isElementVisible(element) {
+  if (!element || !element.isConnected) {
+    return false;
+  }
+
+  const rect = element.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
+function getTranscriptSegments() {
+  return Array.from(document.querySelectorAll("transcript-segment-view-model"))
+    .filter((segment) => segment?.isConnected);
+}
+
+function getTranscriptSegmentData() {
+  return getTranscriptSegments().map((segment) => {
+    const timestamp = sanitizeText(
+      segment.querySelector(".ytwTranscriptSegmentViewModelTimestamp")?.textContent || ""
+    );
+    const text = sanitizeText(
+      segment.querySelector("span[role='text'], .yt-core-attributed-string")?.textContent ||
+        segment.textContent ||
+        ""
+    );
+
+    return { timestamp, text };
+  });
+}
+
+function formatTranscriptSegmentData(segmentData, includeTimestamps) {
+  const seen = new Set();
+  const rows = segmentData
+    .map(({ timestamp, text }) => {
+      if (!text) {
+        return "";
+      }
+
+      const key = `${timestamp}__${text}`;
+      if (seen.has(key)) {
+        return "";
+      }
+      seen.add(key);
+
+      return includeTimestamps && timestamp ? `[${timestamp}] ${text}` : text;
+    })
+    .filter(Boolean);
+
+  return rows.join("\n").trim();
+}
+
+function extractTranscriptFromViewModels(includeTimestamps) {
+  return formatTranscriptSegmentData(getTranscriptSegmentData(), includeTimestamps);
+}
+
+function getVisibleTranscriptContainer() {
+  return getTranscriptContainerCandidates().find((element) => {
+    const text = sanitizeText(element?.innerText || element?.textContent || "");
+    return Boolean(text) && isElementVisible(element);
+  });
+}
+
+function getTranscriptPanelText(includeTimestamps) {
+  const transcriptFromViewModels = extractTranscriptFromViewModels(includeTimestamps);
+  if (transcriptFromViewModels) {
+    return transcriptFromViewModels;
+  }
+
+  const transcriptContainer = getVisibleTranscriptContainer();
+  if (!transcriptContainer) {
+    return "";
+  }
+
+  const transcriptRaw = sanitizeText(
+    (transcriptContainer.innerText || transcriptContainer.textContent || "")
+      .split("\n")
+      .join(" ")
+  );
+  return includeTimestamps ? transcriptRaw : removeTimestamps(transcriptRaw);
+}
+
+async function stabilizeTranscriptViewModels(includeTimestamps, timeoutMs = 12000) {
+  const startedAt = Date.now();
+  let idleRounds = 0;
+  let lastSignature = "";
+  let bestTranscript = "";
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const segmentData = getTranscriptSegmentData();
+    const lastTimestamp = segmentData[segmentData.length - 1]?.timestamp || "";
+    const signature = `${segmentData.length}:${lastTimestamp}`;
+    const transcript = formatTranscriptSegmentData(segmentData, includeTimestamps);
+
+    if (transcript) {
+      bestTranscript = transcript;
+    }
+
+    if (signature && signature === lastSignature) {
+      idleRounds += 1;
+      if (idleRounds >= 4 && bestTranscript) {
+        return bestTranscript;
+      }
+    } else {
+      idleRounds = 0;
+      lastSignature = signature;
+    }
+
+    const container = getVisibleTranscriptContainer();
+    if (container) {
+      const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+      if (maxScrollTop > 0) {
+        const nextScrollTop = Math.min(maxScrollTop, container.scrollTop + Math.max(container.clientHeight * 0.9, 400));
+        if (nextScrollTop !== container.scrollTop) {
+          container.scrollTop = nextScrollTop;
+        }
+      }
+    }
+
+    await sleep(300);
+  }
+
+  return bestTranscript;
+}
+
 async function fetchTranscriptFromPanel(includeTimestamps) {
-  const transcriptContainerSelector =
-    ".ytd-transcript-segment-list-renderer#segments-container";
+  let transcript = await stabilizeTranscriptViewModels(includeTimestamps, 2000);
+  if (!transcript) {
+    transcript = getTranscriptPanelText(includeTimestamps);
+  }
 
-  let transcriptContainer = document.querySelector(transcriptContainerSelector);
-
-  if (!transcriptContainer || !transcriptContainer?.offsetParent) {
+  if (!transcript) {
     const directSelector =
       '#primary-button > ytd-button-renderer > yt-button-shape > button[aria-label*="transcript" i]';
 
@@ -430,14 +597,14 @@ async function fetchTranscriptFromPanel(includeTimestamps) {
 
     showTranscriptButton.click();
 
-    transcriptContainer = await waitForElement(transcriptContainerSelector, 5000);
-    if (!transcriptContainer) {
+    transcript = await waitForCondition(() => getTranscriptPanelText(includeTimestamps), 12000, 250);
+    if (!transcript) {
       throw new Error("Transcript panel did not load.");
     }
+
+    transcript = (await stabilizeTranscriptViewModels(includeTimestamps, 12000)) || transcript;
   }
 
-  const transcriptRaw = sanitizeText(transcriptContainer.innerText.split("\n").join(" "));
-  const transcript = includeTimestamps ? transcriptRaw : removeTimestamps(transcriptRaw);
   if (!transcript) {
     throw new Error("Transcript is empty.");
   }
@@ -445,25 +612,46 @@ async function fetchTranscriptFromPanel(includeTimestamps) {
   return transcript;
 }
 
+
+
+
+
 // Fetch transcript only from transcript panel to avoid CSP issues on YouTube.
 async function fetchTranscript() {
+  const currentMode = getCurrentMode();
+  const includeTimestamps = getTimestampEnabled();
+  const videoId = getCurrentVideoId();
+  lastTranscript = "";
+
+  let panelError = null;
+
   try {
-    const currentMode = getCurrentMode();
-    const includeTimestamps = getTimestampEnabled();
-    const videoId = getCurrentVideoId();
-    lastTranscript = "";
-
     lastTranscript = await fetchTranscriptFromPanel(includeTimestamps);
-
-    lastTranscriptMode = currentMode;
-    lastTranscriptVideoId = videoId;
-    lastTranscriptTimestampEnabled = includeTimestamps;
-    return lastTranscript;
   } catch (error) {
-    console.error("Error fetching transcript:", error);
-    showStatus("error");
-    return null;
+    panelError = error;
+    console.error("Error fetching transcript from panel:", error);
   }
+
+  if (!lastTranscript) {
+    try {
+      lastTranscript = await fetchTranscriptFromCaptionTracks(currentMode, includeTimestamps);
+    } catch (captionError) {
+      console.error("Error fetching transcript from caption tracks:", captionError);
+
+      if (panelError) {
+        throw new Error(
+          `${panelError.message} Fallback failed: ${captionError.message}`
+        );
+      }
+
+      throw captionError;
+    }
+  }
+
+  lastTranscriptMode = currentMode;
+  lastTranscriptVideoId = videoId;
+  lastTranscriptTimestampEnabled = includeTimestamps;
+  return lastTranscript;
 }
 
 // Copy text to clipboard
@@ -851,3 +1039,4 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
 
   return true;
 });
+
