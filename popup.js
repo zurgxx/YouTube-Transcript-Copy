@@ -17,6 +17,30 @@ function setButtonsEnabled(enabled) {
   downloadBtn.disabled = !enabled;
 }
 
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch (error) {
+    window.focus();
+
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+
+    const copied = document.execCommand("copy");
+    textarea.remove();
+
+    if (!copied) {
+      throw error;
+    }
+  }
+}
+
 function updateStateView(state) {
   modeBtn.textContent = `MODE: ${state.mode || "ORIG"}`;
   tsBtn.textContent = `TS: ${state.timestampEnabled ? "ON" : "OFF"}`;
@@ -123,7 +147,7 @@ copyBtn.addEventListener("click", async () => {
         throw new Error(result?.error || "Transcript is unavailable.");
       }
 
-      await navigator.clipboard.writeText(result.transcript);
+      await copyText(result.transcript);
       setStatus("Copied");
     });
   } catch (error) {

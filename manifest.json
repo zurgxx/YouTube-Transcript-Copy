@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YouTube Transcript Copy",
-  "version": "1.4",
+  "version": "1.5",
   "description": "Copy and download YouTube video transcripts in one click",
   "permissions": [
     "activeTab",

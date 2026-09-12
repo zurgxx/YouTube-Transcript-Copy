@@ -660,7 +660,27 @@ async function copyToClipboard(text) {
     throw new Error("No transcript to copy");
   }
 
-  await navigator.clipboard.writeText(text);
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch (error) {
+    window.focus();
+
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+
+    const copied = document.execCommand("copy");
+    textarea.remove();
+
+    if (!copied) {
+      throw error;
+    }
+  }
 }
 
 // Download text as file
